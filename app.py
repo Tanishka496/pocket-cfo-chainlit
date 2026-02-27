@@ -38,12 +38,15 @@ MODEL_NAME = "llama3.2"  # faster than default
 async def extract_transaction(user_input: str) -> dict:
     prompt = f"JSON only: {{amount, type, category}}. Text: {user_input}"
     try:
+        print(f"DEBUG: Calling Ollama at {OLLAMA_URL} with prompt: {prompt}", flush=True)
         resp = requests.post(
             OLLAMA_URL,
             json={"model": MODEL_NAME, "prompt": prompt, "stream": False},
-            timeout=20
+            timeout=30
         )
+        resp.raise_for_status()
         ai_text = resp.json().get("response", "")
+        print(f"DEBUG: Ollama response: {ai_text}", flush=True)
         match = re.search(r"\{.*\}", ai_text, re.DOTALL)
         if match:
             data = json.loads(match.group(0))
@@ -54,10 +57,19 @@ async def extract_transaction(user_input: str) -> dict:
             data.setdefault("category", "Other")
             data.setdefault("description", user_input)
             return data
-    except:
-        pass
+    except requests.exceptions.Timeout:
+        print("ERROR: Ollama request timed out after 30s", flush=True)
+    except requests.exceptions.ConnectionError as e:
+        print(f"ERROR: Cannot connect to Ollama at {OLLAMA_URL}: {e}", flush=True)
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: Ollama request failed: {e}", flush=True)
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Failed to parse Ollama response: {e}", flush=True)
+    except Exception as e:
+        print(f"ERROR: Unexpected error in extract_transaction: {e}", flush=True)
 
     # fallback simple extraction
+    print("DEBUG: Using fallback extraction", flush=True)
     amount_match = re.search(r"(\d+(\.\d+)?)", user_input)
     amount = float(amount_match.group(1)) if amount_match else None
     type_ = "expense" if "spent" in user_input.lower() else "revenue"
@@ -75,14 +87,20 @@ async def extract_transaction(user_input: str) -> dict:
 # SAVE TRANSACTION TO SUPABASE
 # -------------------------
 def save_transaction(data: dict):
-    record = {
-        "date": data.get("date", datetime.now().strftime("%Y-%m-%d")),
-        "amount": data.get("amount", 0.0),
-        "type": data.get("type", "expense"),
-        "category": data.get("category", "Other"),
-        "description": data.get("description", "")
-    }
-    supabase.table(TABLE_NAME).insert(record).execute()
+    try:
+        record = {
+            "date": data.get("date", datetime.now().strftime("%Y-%m-%d")),
+            "amount": data.get("amount", 0.0),
+            "type": data.get("type", "expense"),
+            "category": data.get("category", "Other"),
+            "description": data.get("description", "")
+        }
+        print(f"DEBUG: Saving transaction to Supabase: {record}", flush=True)
+        supabase.table(TABLE_NAME).insert(record).execute()
+        print("DEBUG: Transaction saved successfully", flush=True)
+    except Exception as e:
+        print(f"ERROR: Failed to save transaction to Supabase: {e}", flush=True)
+        raise
 
 # -------------------------
 # FETCH LAST N TRANSACTIONS
@@ -167,10 +185,20 @@ async def call_ollama_stream(prompt: str, msg_element: cl.Message):
 # -------------------------
 @cl.on_chat_start
 async def start():
-    await cl.Message(content="⚡ Hackathon Mode Active. Transactions go directly to Supabase!").send()
+    print("DEBUG: Chat started", flush=True)
+    # Test Ollama connectivity
+    try:
+        resp = requests.get("http://localhost:11434/api/tags", timeout=5)
+        if resp.status_code == 200:
+            await cl.Message(content="✅ Ollama connected. ⚡ Hackathon Mode Active. Transactions go directly to Supabase!").send()
+        else:
+            await cl.Message(content=f"⚠️ Ollama returned status {resp.status_code}. Fallback to simple extraction.").send()
+    except Exception as e:
+        await cl.Message(content=f"⚠️ Ollama not responding ({e}). Using fallback extraction.").send()
 
 @cl.on_message
 async def main(message: cl.Message):
+    print(f"DEBUG: Received message: {message.content}", flush=True)
     # 1️⃣ Extract structured data
     data = await extract_transaction(message.content)
 
@@ -179,7 +207,11 @@ async def main(message: cl.Message):
         return
 
     # 2️⃣ Save to Supabase
-    save_transaction(data)
+    try:
+        save_transaction(data)
+    except Exception as e:
+        await cl.Message(content=f"❌ Error saving transaction: {e}").send()
+        return
 
     # 3️⃣ Stream confirmation + insights
     res_msg = cl.Message(content="")
