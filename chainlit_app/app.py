@@ -5,6 +5,23 @@ import re
 import os
 from datetime import datetime
 from supabase import create_client
+import threading
+
+# start FastAPI backend in background thread
+# this uses uvicorn which must be installed via requirements.txt
+# The backend lives under backend/app and provides transaction APIs
+try:
+    import uvicorn
+
+    def start_backend():
+        """Launch FastAPI service from the bundled backend package."""
+        # use localhost to avoid exposing to network
+        uvicorn.run("backend.app.main:app", host="127.0.0.1", port=8000, log_level="info")
+
+    backend_thread = threading.Thread(target=start_backend, daemon=True)
+    backend_thread.start()
+except ImportError:
+    print("⚠️ uvicorn not installed; backend will not start")
 
 # -------------------------
 # ENVIRONMENT VARIABLES
@@ -95,32 +112,33 @@ async def extract_transaction(user_input: str) -> dict:
 # SAVE TRANSACTION TO SUPABASE
 # -------------------------
 def save_transaction(data: dict):
+    """Send transaction data to the backend API instead of talking to Supabase directly."""
     try:
-        record = {
-            "date": data.get("date", datetime.now().strftime("%Y-%m-%d")),
-            "amount": data.get("amount", 0.0),
-            "type": data.get("type", "expense"),
-            "category": data.get("category", "Other"),
-            "description": data.get("description", "")
-        }
-        print(f"DEBUG: Saving transaction to Supabase: {record}", flush=True)
-        get_supabase().table(TABLE_NAME).insert(record).execute()
-        print("DEBUG: Transaction saved successfully", flush=True)
+        # the backend will handle insertion and return the created record
+        resp = requests.post(
+            "http://127.0.0.1:8000/transactions",
+            json=data,
+            timeout=10
+        )
+        resp.raise_for_status()
+        print(f"DEBUG: Saved transaction via backend, status {resp.status_code}", flush=True)
+        return resp.json()
     except Exception as e:
-        print(f"ERROR: Failed to save transaction to Supabase: {e}", flush=True)
+        print(f"ERROR: Failed to save transaction via backend: {e}", flush=True)
         raise
 
 # -------------------------
 # FETCH LAST N TRANSACTIONS
 # -------------------------
 def get_last_transactions(limit=5):
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return []
+    """Fetch recent transactions from the backend API."""
     try:
-        resp = get_supabase().table(TABLE_NAME).select("*").order("date", desc=True).limit(limit).execute()
-        return resp.data or []
+        resp = requests.get(f"http://127.0.0.1:8000/transactions?limit={limit}", timeout=10)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        return data
     except Exception as e:
-        print(f"ERROR: Failed to fetch transactions: {e}", flush=True)
+        print(f"ERROR: Failed to fetch transactions via backend: {e}", flush=True)
         return []
 
 # -------------------------
@@ -169,7 +187,7 @@ async def call_ollama_stream(prompt: str, msg_element: cl.Message):
 @cl.on_chat_start
 async def start():
     print("DEBUG: Chat started", flush=True)
-    status = ["🦙 Ollama (llama3.2) Ready"]
+    status = ["🦙 Ollama (llama3.2) Ready", "🚀 Backend API available"]
     
     if SUPABASE_URL and SUPABASE_KEY:
         status.append("✅ Supabase configured")
