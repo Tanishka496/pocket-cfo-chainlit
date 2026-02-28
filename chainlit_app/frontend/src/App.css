@@ -1,0 +1,38 @@
+body, html {
+  margin: 0;
+  padding: 0;
+  font-family: Arial, sans-serif;
+}
+
+.App {
+  padding: 20px;
+}
+
+.main {
+  display: flex;
+  gap: 20px;
+}
+
+.left-pane {
+  flex: 1;
+}
+
+.right-pane {
+  flex: 1;
+}
+
+.transaction-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.transaction-list ul {
+  list-style: none;
+  padding: 0;
+}
+
+.transaction-list li {
+  padding: 5px 0;
+  border-bottom: 1px solid #eee;
+}
